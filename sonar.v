@@ -20,26 +20,26 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
+`timescale 1ns / 1ps
+
 module sonar #(
     parameter CLK_FREQ_HZ = 100_000_000
 )(
-    input  wire        clk,
-    input  wire        rst,
-    input  wire        sonar_pwm,    // Input from Pmod pin 4
-    output reg         sonar_trigger,// Output to Pmod pin 3 (The new addition)
-    output reg [8:0]   distance_in,
-    output reg         valid
+    input  wire         clk,
+    input  wire         rst,
+    input  wire         sonar_pwm,    
+    output reg          sonar_trigger,
+    output reg [8:0]    distance_in,
+    output reg          valid
 );
 
-    // --- Constants ---
-    // 147us per inch.
-    localparam CYCLES_PER_INCH = (CLK_FREQ_HZ / 1_000_000) * 147;
+    // The sensor defines 147us per inch.
+    // 147us * 100MHz clock = 14,700 cycles per inch.
+    localparam CYCLES_PER_INCH = 14_700;
     
-    // We need to wait roughly 60ms between pings to let echoes settle.
-    // 60ms * 100MHz = 6,000,000 cycles.
+    // Wait time between pings (e.g., 60ms) so echoes die down.
     localparam REFRESH_TICK_MAX = 6_000_000; 
 
-    // --- State Machine States (Satisfies FSM Requirement) ---
     localparam S_IDLE       = 0;
     localparam S_TRIGGER    = 1;
     localparam S_WAIT_HIGH  = 2;
@@ -47,9 +47,14 @@ module sonar #(
     localparam S_COOLDOWN   = 4;
 
     reg [2:0] state;
-    reg [31:0] timer_counter; // Re-used for trigger timing and cooldown
+    // General purpose timer for trigger pulse and cooldown
+    reg [31:0] timer_counter; 
+    
+    // Specific timers for measuring the PWM pulse width
+    reg [31:0] inch_counter_timer;
+    reg [8:0]  current_distance_count;
 
-    // --- Synchronization (Your code - Kept exactly the same) ---
+    // --- Synchronization of Input Signal ---
     reg pwm_sync_0, pwm_sync_1;
     always @(posedge clk) begin
         if (rst) begin
@@ -61,7 +66,7 @@ module sonar #(
         end
     end
     
-    // --- Edge Detection (Your code - Kept exactly the same) ---
+    // --- Edge Detection ---
     reg pwm_prev;
     wire pwm_rising, pwm_falling;
     always @(posedge clk) begin
@@ -71,48 +76,47 @@ module sonar #(
     assign pwm_rising  = (pwm_sync_1 && !pwm_prev);
     assign pwm_falling = (!pwm_sync_1 && pwm_prev);
 
-    // --- The Main FSM Logic ---
-    reg [31:0] pulse_width_counter;
-
+    // --- Main FSM ---
     always @(posedge clk) begin
         if (rst) begin
             state <= S_IDLE;
             sonar_trigger <= 0;
-            pulse_width_counter <= 0;
             timer_counter <= 0;
             distance_in <= 0;
             valid <= 0;
+            inch_counter_timer <= 0;
+            current_distance_count <= 0;
         end else begin
-            // Default valid to 0 (pulse it only for one cycle)
-            valid <= 0; 
+            valid <= 0; // Default
             
             case (state)
                 S_IDLE: begin
-                    // Start everything off
                     timer_counter <= 0;
                     state <= S_TRIGGER;
                 end
 
                 S_TRIGGER: begin
-                    // Hold Trigger High for 10uS (1000 cycles at 100MHz)
+                    // Hold trigger high for > 20us (2000 cycles) to initiate read
                     sonar_trigger <= 1;
                     timer_counter <= timer_counter + 1;
-                    if (timer_counter > 1000) begin
+                    if (timer_counter > 2000) begin 
                         sonar_trigger <= 0;
                         state <= S_WAIT_HIGH;
+                        timer_counter <= 0;
                     end
                 end
 
                 S_WAIT_HIGH: begin
-                    // Wait for the sensor to respond with the rising edge of PWM
+                    // Wait for sensor to pull PWM line high
                     if (pwm_rising) begin
-                        pulse_width_counter <= 0;
+                        // Reset measurement counters
+                        inch_counter_timer <= 0;
+                        current_distance_count <= 0;
                         state <= S_MEASURE;
                     end
-                    // Safety: If sensor disconnects, don't hang forever.
-                    // If we wait > 50ms without response, go to cooldown.
+                    // Timeout safety if sensor is disconnected
                     else if (timer_counter > REFRESH_TICK_MAX) begin
-                        state <= S_COOLDOWN;
+                        state <= S_COOLDOWN; 
                         timer_counter <= 0;
                     end
                     else begin
@@ -121,20 +125,26 @@ module sonar #(
                 end
 
                 S_MEASURE: begin
-                    // We are currently reading the pulse
                     if (pwm_falling) begin
-                        // CALCULATION DONE HERE
-                        distance_in <= pulse_width_counter / CYCLES_PER_INCH;
+                        // Pulse finished. Latch the result.
+                        distance_in <= current_distance_count;
                         valid <= 1;
                         timer_counter <= 0;
                         state <= S_COOLDOWN;
                     end else begin
-                        pulse_width_counter <= pulse_width_counter + 1;
+                        // While PWM is high, increment a timer.
+                        // Every time the timer hits 14,700 cycles, increment inch count.
+                        if (inch_counter_timer >= CYCLES_PER_INCH) begin
+                            current_distance_count <= current_distance_count + 1;
+                            inch_counter_timer <= 0;
+                        end else begin
+                            inch_counter_timer <= inch_counter_timer + 1;
+                        end
                     end
                 end
 
                 S_COOLDOWN: begin
-                    // Wait rest of the 60ms cycle before pinging again
+                    // Wait rest of cycle before pinging again
                     if (timer_counter < REFRESH_TICK_MAX) begin
                         timer_counter <= timer_counter + 1;
                     end else begin
