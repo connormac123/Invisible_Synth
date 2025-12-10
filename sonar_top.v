@@ -75,58 +75,43 @@ module sonar_top(
 
     
     reg [15:0] led_bar_reg;
-    reg [31:0] r_tuning_word;
+    reg [31:0] base_tuning_word;  // The calculated note
+    reg [31:0] final_tuning_word; // The note after octave shifting
+    
+always @(*) begin
+        base_tuning_word = 0; 
+        
+        if (w_distance < 4)       base_tuning_word = 0; 
+        else if (w_distance < 12) base_tuning_word = 32'd11236; // C4
+        else if (w_distance < 20) base_tuning_word = 32'd12612; // D4
+        else if (w_distance < 28) base_tuning_word = 32'd14157; // E4
+        else if (w_distance < 36) base_tuning_word = 32'd15000; // F4
+        else if (w_distance < 44) base_tuning_word = 32'd16836; // G4
+        else if (w_distance < 52) base_tuning_word = 32'd18899; // A4
+        else if (w_distance < 60) base_tuning_word = 32'd21213; // B4
+        else if (w_distance < 68) base_tuning_word = 32'd22472; // C5
+        else                      base_tuning_word = 0;
+    end
     
     always @(*) begin
-        // Default: Silence (0 Hz)
-        r_tuning_word = 0; 
-        
-        if (w_distance < 12) begin
-            // Too close / Noise: Silence
-            r_tuning_word = 0; 
+        if (sw[0] == 1'b1) begin
+            // Switch 0 ON: Shift Left (Multiply by 2) -> Higher Octave
+            final_tuning_word = base_tuning_word << 1;
         end
-        else if (w_distance < 20) begin
-            // Note C4 (Middle C) - 261 Hz
-            r_tuning_word = 32'd11236; 
-        end
-        else if (w_distance < 28) begin
-            // Note D4 - 294 Hz
-            r_tuning_word = 32'd12612; 
-        end
-        else if (w_distance < 36) begin
-            // Note E4 - 330 Hz
-            r_tuning_word = 32'd14157; 
-        end
-        else if (w_distance < 44) begin
-            // Note F4 - 349 Hz
-            r_tuning_word = 32'd15000; 
-        end
-        else if (w_distance < 52) begin
-            // Note G4 - 392 Hz
-            r_tuning_word = 32'd16836; 
-        end
-        else if (w_distance < 60) begin
-            // Note A4 - 440 Hz
-            r_tuning_word = 32'd18899; 
-        end
-        else if (w_distance < 68) begin
-            // Note B4 - 494 Hz
-            r_tuning_word = 32'd21213; 
-        end
-        else if (w_distance < 76) begin
-            // Note C5 (High C) - 523 Hz
-            r_tuning_word = 32'd22472; 
+        else if (sw[15] == 1'b1) begin
+            // Switch 15 ON: Shift Right (Divide by 2) -> Lower Octave
+            final_tuning_word = base_tuning_word >> 1;
         end
         else begin
-            // > 68 inches: Out of range (Silence)
-            r_tuning_word = 0;
+            // Neither (or both): Normal Pitch
+            final_tuning_word = base_tuning_word;
         end
     end
 
     // --- Audio Tone Generator ---
     tone_gen inst_audio (
         .clk(clk),
-        .tuning_word(r_tuning_word), // Distance-based frequency
+        .tuning_word(final_tuning_word), // Distance-based frequency
         .audio_out(audio_out)        // Output signal
     );
     
